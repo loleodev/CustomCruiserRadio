@@ -284,8 +284,8 @@ public class CruiserTunesMod : BaseUnityPlugin
 	            instance.StartCoroutine(EnsureClipReadyAndPlayAt(__instance.radioAudio, timeToApply));
 	        else
 	        {
+	            if (!__instance.radioAudio.isPlaying) __instance.radioAudio.Play();
 	            __instance.radioAudio.time = timeToApply;
-	            __instance.radioAudio.Play();
 	        }
 	    }
 	    else
@@ -334,15 +334,18 @@ public class CruiserTunesMod : BaseUnityPlugin
 
 	    if (audio == null || audio.clip == null || audio.clip.length <= 0f) yield break;
 
-	    audio.time = Mathf.Clamp(timeToSet, 0.01f, audio.clip.length - 0.1f);
-	    audio.Play();
+	    float clampedTime = Mathf.Clamp(timeToSet, 0.01f, audio.clip.length - 0.1f);
 
-	    // reapply a few frames to override transient resets
-	    int frames = 6;
-	    while (frames-- > 0)
+	    // Play first if not already playing, then seek — Unity's Play() resets time to 0
+	    if (!audio.isPlaying) audio.Play();
+	    audio.time = clampedTime;
+
+	    // reapply for ~0.5s to override transient resets from game code
+	    float guardEnd = Time.time + 0.5f;
+	    while (Time.time < guardEnd)
 	    {
 	        if (audio == null || audio.clip == null) yield break;
-	        if (Mathf.Abs(audio.time - timeToSet) > 0.05f) audio.time = timeToSet;
+	        if (Mathf.Abs(audio.time - clampedTime) > 0.5f) audio.time = clampedTime;
 	        yield return null;
 	    }
 	}
@@ -360,17 +363,8 @@ public class CruiserTunesMod : BaseUnityPlugin
 
         if (audio == null || audio.clip == null || audio.clip.length <= 0f) yield break;
 
+        if (!audio.isPlaying) audio.Play();
         audio.time = Mathf.Clamp(audio.time, 0.01f, audio.clip.length - 0.1f);
-        audio.Play();
-
-        // reapply a few frames to override transient resets
-        int frames = 6;
-        while (frames-- > 0)
-        {
-            if (audio == null || audio.clip == null) yield break;
-            if (audio.time < 0.01f) audio.time = 0.01f;
-            yield return null;
-        }
     }
 
 }

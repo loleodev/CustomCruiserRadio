@@ -57,12 +57,7 @@ public class CarPatch
 			{
 				float max = Math.Max(0.01f, __instance.radioAudio.clip.length - 0.1f);
 				playbackTime = UnityEngine.Random.Range(0.01f, max);
-				__instance.radioAudio.time = playbackTime;
 			}
-		}
-		else
-		{
-			__instance.radioAudio.time = 0f;
 		}
 
 		if (CruiserTunesMod.SyncPlaybackTimeMessage != null)
@@ -82,10 +77,6 @@ public class CarPatch
 		Type type = ((object)__instance).GetType();
 		FieldInfo field = type.GetField("currentRadioClip", BindingFlags.Instance | BindingFlags.NonPublic);
 		field.SetValue(__instance, (int)field.GetValue(__instance) % __instance.radioClips.Length);
-		if (!CruiserTunesMod.DoRandomTime.Value)
-		{
-			__instance.radioAudio.time = 0f;
-		}
 	}
 
 	[HarmonyPatch(typeof(VehicleController), "SetRadioValues")]
@@ -103,10 +94,6 @@ public class CarPatch
 	[HarmonyPrefix]
 	public static void SwitchRadioPatch(VehicleController __instance)
 	{
-		if (!CruiserTunesMod.DoRandomTime.Value)
-		{
-			__instance.radioAudio.time = 0f;
-		}
 	}
 
 	public static IEnumerator AudioSourceListener(AudioSource radio, VehicleController instance)
@@ -118,10 +105,6 @@ public class CarPatch
 			yield return null;
 			if (clip != radio.clip)
 			{
-				if (!CruiserTunesMod.DoRandomTime.Value)
-				{
-					radio.time = 0f;
-				}
 				if (CruiserTunesMod.GoodQuality.Value)
 				{
 					radio.volume = 1f;
@@ -178,6 +161,8 @@ public class CarPatch
 
 		if (audio == null || audio.clip == null || audio.clip.length <= 0f) yield break;
 
+		if (!audio.isPlaying) audio.Play();
+
 		if (CruiserTunesMod.DoRandomTime != null && CruiserTunesMod.DoRandomTime.Value)
 		{
 			float max = Mathf.Max(0.01f, audio.clip.length - 0.1f);
@@ -187,8 +172,6 @@ public class CarPatch
 		{
 			audio.time = 0f;
 		}
-
-		audio.Play();
 	}
 
 	public static void ChangeRadioStationWithoutServer(VehicleController instance)
