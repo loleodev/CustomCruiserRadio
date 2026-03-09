@@ -43,8 +43,15 @@ public class CruiserTunesMod : BaseUnityPlugin
 
 	public static AudioClip[] CustomSongs;
 
-	public static LNetworkMessage<float> SyncPlaybackTimeMessage;
-	public static float SyncedPlaybackTime;
+	[System.Serializable]
+	public struct RadioSyncData
+	{
+		public int Station;
+		public float PlaybackTime;
+	}
+
+	public static LNetworkMessage<RadioSyncData> SyncPlaybackTimeMessage;
+	public static RadioSyncData? PendingSyncData;
 
 	private const string supportedAudioFileTypes = ".mp3 or .wav or .ogg";
 
@@ -74,8 +81,8 @@ public class CruiserTunesMod : BaseUnityPlugin
 		GoodQuality = ((BaseUnityPlugin)this).Config.Bind<bool>("Settings", "Always have good quality", true, "When switching between channels the quality will remain good");
 		Volume = ((BaseUnityPlugin)this).Config.Bind<float>("Settings", "Volume", 0.75f, "Volume of the radio (does not require restart)");
 		Volume.SettingChanged += CarPatch.ChangeVolume;
-		SyncPlaybackTimeMessage = LNetworkMessage<float>.Connect("CruiserTunes_SyncTime",
-			onClientReceived: (float time) => { SyncedPlaybackTime = time; });
+		SyncPlaybackTimeMessage = LNetworkMessage<RadioSyncData>.Connect("CruiserTunes_SyncTime",
+			onClientReceived: OnSyncDataReceived);
 		string directoryName = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
 		string text = Path.Combine(directoryName, folderName);
 		List<string> list = new List<string>();
@@ -223,11 +230,6 @@ public class CruiserTunesMod : BaseUnityPlugin
 
 	public static AudioType GetAudioType(string fileType)
 	{
-		//IL_0030: Unknown result type (might be due to invalid IL or missing references)
-		//IL_0042: Unknown result type (might be due to invalid IL or missing references)
-		//IL_0035: Unknown result type (might be due to invalid IL or missing references)
-		//IL_003a: Unknown result type (might be due to invalid IL or missing references)
-		//IL_003f: Unknown result type (might be due to invalid IL or missing references)
 		return (AudioType)(fileType switch
 		{
 			".mp3" => 13, 
@@ -253,17 +255,30 @@ public class CruiserTunesMod : BaseUnityPlugin
 		return list;
 	}
 
+	private static void OnSyncDataReceived(RadioSyncData data)
+	{
+		PendingSyncData = data;
+		// If the RPC already fired and the clip is set, apply the time now
+		var vc = UnityEngine.Object.FindObjectOfType<VehicleController>();
+		if (vc != null && vc.radioAudio != null && vc.radioAudio.clip != null
+			&& data.Station >= 0 && data.Station < vc.radioClips.Length
+			&& vc.radioAudio.clip == vc.radioClips[data.Station] && data.PlaybackTime > 0f)
+		{
+			vc.radioAudio.time = Mathf.Clamp(data.PlaybackTime, 0.01f, vc.radioAudio.clip.length - 0.1f);
+			PendingSyncData = null;
+		}
+	}
+
 	[HarmonyPatch(typeof(VehicleController), "SetRadioStationClientRpc")]
 	[HarmonyPostfix]
 	public static void SetRadioStationPatch(ref int radioStation, VehicleController __instance)
 	{
 	    __instance.radioAudio.clip = __instance.radioClips[radioStation];
 
-	    float timeToApply = SyncedPlaybackTime;
-	    SyncedPlaybackTime = 0f;
-
-	    if (timeToApply > 0f)
+	    if (PendingSyncData.HasValue && PendingSyncData.Value.Station == radioStation)
 	    {
+	        float timeToApply = PendingSyncData.Value.PlaybackTime;
+	        PendingSyncData = null;
 	        if (instance != null)
 	            instance.StartCoroutine(EnsureClipReadyAndPlayAt(__instance.radioAudio, timeToApply));
 	        else
@@ -274,10 +289,33 @@ public class CruiserTunesMod : BaseUnityPlugin
 	    }
 	    else
 	    {
+	        // Message hasn't arrived yet — wait briefly for it
 	        if (instance != null)
-	            instance.StartCoroutine(EnsureClipReadyAndPlay(__instance.radioAudio));
+	            instance.StartCoroutine(WaitForSyncThenPlay(__instance.radioAudio, radioStation));
 	        else
 	            __instance.radioAudio.Play();
+	    }
+	}
+
+	private static IEnumerator WaitForSyncThenPlay(AudioSource audio, int expectedStation)
+	{
+	    float timeout = 0.5f;
+	    float start = Time.time;
+	    while (!PendingSyncData.HasValue || PendingSyncData.Value.Station != expectedStation)
+	    {
+	        if (Time.time - start > timeout) break;
+	        yield return null;
+	    }
+
+	    if (PendingSyncData.HasValue && PendingSyncData.Value.Station == expectedStation)
+	    {
+	        float timeToApply = PendingSyncData.Value.PlaybackTime;
+	        PendingSyncData = null;
+	        yield return EnsureClipReadyAndPlayAt(audio, timeToApply);
+	    }
+	    else
+	    {
+	        yield return EnsureClipReadyAndPlay(audio);
 	    }
 	}
 

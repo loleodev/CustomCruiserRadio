@@ -9,10 +9,6 @@ public class CarPatch
 {
 	public static float checkTimer;
 
-	public static Type type = typeof(VehicleController);
-
-	public static FieldInfo radioOnField = type.GetField("radioOn", BindingFlags.Instance | BindingFlags.NonPublic);
-
 	[HarmonyPatch(typeof(VehicleController), "Awake")]
 	[HarmonyPostfix]
 	public static void AwakePatch(VehicleController __instance)
@@ -73,8 +69,11 @@ public class CarPatch
 
 		if (CruiserTunesMod.SyncPlaybackTimeMessage != null)
 		{
-			CruiserTunesMod.SyncedPlaybackTime = playbackTime;
-			CruiserTunesMod.SyncPlaybackTimeMessage.SendClients(playbackTime);
+			FieldInfo clipField = __instance.GetType().GetField("currentRadioClip", BindingFlags.Instance | BindingFlags.NonPublic);
+			int station = clipField != null ? (int)clipField.GetValue(__instance) : 0;
+			var syncData = new CruiserTunesMod.RadioSyncData { Station = station, PlaybackTime = playbackTime };
+			CruiserTunesMod.PendingSyncData = syncData;
+			CruiserTunesMod.SyncPlaybackTimeMessage.SendClients(syncData);
 		}
 	}
 
