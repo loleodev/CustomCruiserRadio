@@ -40,4 +40,7 @@
       <HintPath>..\..\..\..\Program Files (x86)\Steam\steamapps\common\Lethal Company\Lethal Company_Data\Managed\UnityEngine.UnityWebRequestModule.dll</HintPath>
     </Reference>
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Xilophor.LethalNetworkAPI" Version="2.*" PrivateAssets="all" />
+  </ItemGroup>
 </Project>

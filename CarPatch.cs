@@ -56,28 +56,25 @@ public class CarPatch
 	[HarmonyPostfix]
 	public static void ChangeRadioStationPatch(VehicleController __instance)
 	{
+		float playbackTime = 0f;
 		if (CruiserTunesMod.DoRandomTime != null && CruiserTunesMod.DoRandomTime.Value)
 		{
-			// When server changes station, set the authoritative stored song time so it's synced to clients
-			FieldInfo timeField = __instance.GetType().GetField("currentSongTime", BindingFlags.Instance | BindingFlags.NonPublic);
-			if (timeField != null && __instance.radioAudio != null && __instance.radioAudio.clip != null && __instance.radioAudio.clip.length > 0f)
+			if (__instance.radioAudio != null && __instance.radioAudio.clip != null && __instance.radioAudio.clip.length > 0f)
 			{
 				float max = Math.Max(0.01f, __instance.radioAudio.clip.length - 0.1f);
-				float t = UnityEngine.Random.Range(0.01f, max);
-				try
-				{
-					timeField.SetValue(__instance, t);
-					__instance.radioAudio.time = t; // apply locally as well
-				}
-				catch
-				{
-					// ignore reflection failures
-				}
+				playbackTime = UnityEngine.Random.Range(0.01f, max);
+				__instance.radioAudio.time = playbackTime;
 			}
 		}
 		else
 		{
 			__instance.radioAudio.time = 0f;
+		}
+
+		if (CruiserTunesMod.SyncPlaybackTimeMessage != null)
+		{
+			CruiserTunesMod.SyncedPlaybackTime = playbackTime;
+			CruiserTunesMod.SyncPlaybackTimeMessage.SendClients(playbackTime);
 		}
 	}
 
@@ -112,24 +109,6 @@ public class CarPatch
 		if (!CruiserTunesMod.DoRandomTime.Value)
 		{
 			__instance.radioAudio.time = 0f;
-		}
-	}
-
-	[HarmonyPatch(typeof(VehicleController), "SetRadioStationClientRpc")]
-	[HarmonyPostfix]
-	public static void SetRadioStationPatch(ref int radioStation, VehicleController __instance)
-	{
-		// If the mod's improved patch is present, skip this one to avoid duplicate playback/resync coroutines
-		if (CruiserTunesMod.instance != null) return;
-		__instance.radioAudio.clip = __instance.radioClips[radioStation];
-		// Start playback once the clip is ready; EnsureClipReadyAndPlay will set a random start time if enabled.
-		if (CruiserTunesMod.instance != null)
-		{
-			CruiserTunesMod.instance.StartCoroutine(EnsureClipReadyAndPlay(__instance.radioAudio));
-		}
-		else
-		{
-			__instance.radioAudio.Play();
 		}
 	}
 
@@ -226,18 +205,15 @@ public class CarPatch
 		FieldInfo field = type.GetField("radioSignalDecreaseThreshold", BindingFlags.Instance | BindingFlags.NonPublic);
 		FieldInfo field2 = type.GetField("radioSignalQuality", BindingFlags.Instance | BindingFlags.NonPublic);
 		FieldInfo field3 = type.GetField("currentRadioClip", BindingFlags.Instance | BindingFlags.NonPublic);
-		FieldInfo field4 = type.GetField("currentSongTime", BindingFlags.Instance | BindingFlags.NonPublic);
 		int num = ((int)field3.GetValue(instance) + 1) % instance.radioClips.Length;
 		field3.SetValue(instance, num);
 		instance.radioAudio.clip = instance.radioClips[num];
-		// Defer setting time and playing until clip is ready (handles streamed clips)
 		if (CruiserTunesMod.instance != null)
 		{
 			CruiserTunesMod.instance.StartCoroutine(EnsureClipReadyAndPlay(instance.radioAudio));
 		}
 		else
 		{
-			// fallback: try to set time immediately
 			if (CruiserTunesMod.DoRandomTime.Value && instance.radioAudio.clip != null && instance.radioAudio.clip.length > 0f)
 			{
 				float max = Math.Max(0.01f, instance.radioAudio.clip.length - 0.1f);
@@ -245,7 +221,7 @@ public class CarPatch
 			}
 			else
 			{
-				instance.radioAudio.time = Mathf.Clamp((float)field4.GetValue(instance) % instance.radioAudio.clip.length, 0.01f, instance.radioAudio.clip.length - 0.1f);
+				instance.radioAudio.time = 0f;
 			}
 			instance.radioAudio.Play();
 		}

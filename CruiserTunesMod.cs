@@ -7,9 +7,11 @@ using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using HarmonyLib;
+using LethalNetworkAPI;
 using UnityEngine;
 using UnityEngine.Networking;
 
+[BepInDependency("LethalNetworkAPI")]
 [BepInPlugin("Mellowdy.CruiserTunes", "CruiserTunes", "1.3.0")]
 public class CruiserTunesMod : BaseUnityPlugin
 {
@@ -41,6 +43,9 @@ public class CruiserTunesMod : BaseUnityPlugin
 
 	public static AudioClip[] CustomSongs;
 
+	public static LNetworkMessage<float> SyncPlaybackTimeMessage;
+	public static float SyncedPlaybackTime;
+
 	private const string supportedAudioFileTypes = ".mp3 or .wav or .ogg";
 
 	private string folderName = "CustomSongs";
@@ -69,6 +74,8 @@ public class CruiserTunesMod : BaseUnityPlugin
 		GoodQuality = ((BaseUnityPlugin)this).Config.Bind<bool>("Settings", "Always have good quality", true, "When switching between channels the quality will remain good");
 		Volume = ((BaseUnityPlugin)this).Config.Bind<float>("Settings", "Volume", 0.75f, "Volume of the radio (does not require restart)");
 		Volume.SettingChanged += CarPatch.ChangeVolume;
+		SyncPlaybackTimeMessage = LNetworkMessage<float>.Connect("CruiserTunes_SyncTime",
+			onClientReceived: (float time) => { SyncedPlaybackTime = time; });
 		string directoryName = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
 		string text = Path.Combine(directoryName, folderName);
 		List<string> list = new List<string>();
@@ -252,41 +259,23 @@ public class CruiserTunesMod : BaseUnityPlugin
 	{
 	    __instance.radioAudio.clip = __instance.radioClips[radioStation];
 
-	    // If server already stored a start time, use it. Otherwise fall back to EnsureClipReadyAndPlay
-	    float serverTime = 0f;
-	    var timeField = __instance.GetType().GetField("currentSongTime", BindingFlags.Instance | BindingFlags.NonPublic);
-	    if (timeField != null)
-	    {
-	        try
-	        {
-	            var val = timeField.GetValue(__instance);
-	            if (val is float f) serverTime = f;
-	            else if (val is double d) serverTime = (float)d;
-	            else if (val is int i) serverTime = i;
-	        }
-	        catch { /* ignore */ }
-	    }
+	    float timeToApply = SyncedPlaybackTime;
+	    SyncedPlaybackTime = 0f;
 
-	    if (serverTime > 0f)
+	    if (timeToApply > 0f)
 	    {
-	        // apply server-provided time (start coroutine to wait for clip readiness)
-	        if (CruiserTunesMod.instance != null)
-	            CruiserTunesMod.instance.StartCoroutine(EnsureClipReadyAndPlayAt(__instance.radioAudio, serverTime));
+	        if (instance != null)
+	            instance.StartCoroutine(EnsureClipReadyAndPlayAt(__instance.radioAudio, timeToApply));
 	        else
 	        {
-	            __instance.radioAudio.time = serverTime;
+	            __instance.radioAudio.time = timeToApply;
 	            __instance.radioAudio.Play();
 	        }
-
-	        // start a periodic resync to correct drift / late overwrites
-	        if (CruiserTunesMod.instance != null)
-	            CruiserTunesMod.instance.StartCoroutine(SyncPlaybackToServerTime(__instance));
 	    }
 	    else
 	    {
-	        // fallback to existing logic
-	        if (CruiserTunesMod.instance != null)
-	            CruiserTunesMod.instance.StartCoroutine(EnsureClipReadyAndPlay(__instance.radioAudio));
+	        if (instance != null)
+	            instance.StartCoroutine(EnsureClipReadyAndPlay(__instance.radioAudio));
 	        else
 	            __instance.radioAudio.Play();
 	    }
@@ -348,34 +337,4 @@ public class CruiserTunesMod : BaseUnityPlugin
         }
     }
 
-    // Periodic resync coroutine that reads the server field and corrects drift
-	public static IEnumerator SyncPlaybackToServerTime(VehicleController instance)
-	{
-	    var timeField = instance.GetType().GetField("currentSongTime", BindingFlags.Instance | BindingFlags.NonPublic);
-	    if (timeField == null) yield break;
-
-	    while (instance != null && instance.radioAudio != null && instance.radioAudio.clip != null)
-	    {
-	        float serverTime = 0f;
-	        try
-	        {
-	            var val = timeField.GetValue(instance);
-	            if (val is float f) serverTime = f;
-	            else if (val is double d) serverTime = (float)d;
-	            else if (val is int i) serverTime = i;
-	        }
-	        catch { }
-
-	        if (serverTime > 0f)
-	        {
-	            // if client drifted too far from server, snap to server time
-	            if (Mathf.Abs(instance.radioAudio.time - serverTime) > 0.35f)
-	            {
-	                instance.radioAudio.time = Mathf.Clamp(serverTime, 0.01f, instance.radioAudio.clip.length - 0.1f);
-	            }
-	        }
-
-	        yield return new WaitForSeconds(2f);
-	    }
-	}
 }
