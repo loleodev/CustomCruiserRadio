@@ -150,7 +150,8 @@ public class CruiserTunesMod : BaseUnityPlugin
 		{
 			mls.LogError((object)"No songs found");
 		}
-		harmony.PatchAll();
+		harmony.PatchAll(typeof(CruiserTunesMod));
+		harmony.PatchAll(typeof(CarPatch));
 		((MonoBehaviour)this).StartCoroutine(EndOfPatch());
 	}
 
