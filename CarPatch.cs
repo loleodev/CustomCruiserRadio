@@ -7,8 +7,6 @@ using UnityEngine;
 
 public class CarPatch
 {
-	public static float checkTimer;
-
 	[HarmonyPatch(typeof(VehicleController), "Awake")]
 	[HarmonyPostfix]
 	public static void AwakePatch(VehicleController __instance)
@@ -113,7 +111,7 @@ public class CarPatch
 
 	public static IEnumerator AudioSourceListener(AudioSource radio, VehicleController instance)
 	{
-		while (true)
+		while (radio != null && instance != null)
 		{
 			AudioClip clip = radio.clip;
 			instance.radioAudio.loop = CruiserTunesMod.DoLoop.Value;
@@ -145,14 +143,10 @@ public class CarPatch
 			yield return new WaitForSeconds(2f);
 			if (clip == instance.radioAudio.clip)
 			{
-				object localPlayer = StartOfRound.Instance.localPlayerController;
-				var localTransformProp = localPlayer?.GetType().GetProperty("transform");
-				var instanceTransformProp = instance.GetType().GetProperty("transform");
-				if (localTransformProp != null && instanceTransformProp != null)
+				var localPlayer = StartOfRound.Instance.localPlayerController;
+				if (localPlayer != null && instance != null)
 				{
-					Transform t1 = localTransformProp.GetValue(localPlayer) as Transform;
-					Transform t2 = instanceTransformProp.GetValue(instance) as Transform;
-					if (t1 != null && t2 != null && Vector3.Distance(t1.position, t2.position) < 10f)
+					if (Vector3.Distance(localPlayer.transform.position, instance.transform.position) < 10f)
 					{
 						HUDManager.Instance.DisplayTip("Now Playing:", clip.name.Replace("Radio_", "") + " - " + FormatLength(clip.length), false, false, "LC_Tip1");
 					}
@@ -182,17 +176,16 @@ public class CarPatch
 			yield return null;
 		}
 
-		if (audio != null && audio.clip != null && audio.clip.length > 0f)
+		if (audio == null || audio.clip == null || audio.clip.length <= 0f) yield break;
+
+		if (CruiserTunesMod.DoRandomTime != null && CruiserTunesMod.DoRandomTime.Value)
 		{
-			if (CruiserTunesMod.DoRandomTime != null && CruiserTunesMod.DoRandomTime.Value)
-			{
-				float max = Mathf.Max(0.01f, audio.clip.length - 0.1f);
-				audio.time = UnityEngine.Random.Range(0.01f, max);
-			}
-			else
-			{
-				audio.time = 0f;
-			}
+			float max = Mathf.Max(0.01f, audio.clip.length - 0.1f);
+			audio.time = UnityEngine.Random.Range(0.01f, max);
+		}
+		else
+		{
+			audio.time = 0f;
 		}
 
 		audio.Play();

@@ -151,7 +151,6 @@ public class CruiserTunesMod : BaseUnityPlugin
 			mls.LogError((object)"No songs found");
 		}
 		harmony.PatchAll();
-		harmony.PatchAll(typeof(CarPatch));
 		((MonoBehaviour)this).StartCoroutine(EndOfPatch());
 	}
 
@@ -273,6 +272,7 @@ public class CruiserTunesMod : BaseUnityPlugin
 	[HarmonyPostfix]
 	public static void SetRadioStationPatch(ref int radioStation, VehicleController __instance)
 	{
+	    if (radioStation < 0 || radioStation >= __instance.radioClips.Length) return;
 	    __instance.radioAudio.clip = __instance.radioClips[radioStation];
 
 	    if (PendingSyncData.HasValue && PendingSyncData.Value.Station == radioStation)
@@ -315,6 +315,7 @@ public class CruiserTunesMod : BaseUnityPlugin
 	    }
 	    else
 	    {
+	        PendingSyncData = null;
 	        yield return EnsureClipReadyAndPlay(audio);
 	    }
 	}
@@ -330,11 +331,9 @@ public class CruiserTunesMod : BaseUnityPlugin
 	        yield return null;
 	    }
 
-	    if (audio != null && audio.clip != null && audio.clip.length > 0f)
-	    {
-	        audio.time = Mathf.Clamp(timeToSet, 0.01f, audio.clip.length - 0.1f);
-	    }
+	    if (audio == null || audio.clip == null || audio.clip.length <= 0f) yield break;
 
+	    audio.time = Mathf.Clamp(timeToSet, 0.01f, audio.clip.length - 0.1f);
 	    audio.Play();
 
 	    // reapply a few frames to override transient resets
@@ -358,11 +357,9 @@ public class CruiserTunesMod : BaseUnityPlugin
             yield return null;
         }
 
-        if (audio != null && audio.clip != null && audio.clip.length > 0f)
-        {
-            audio.time = Mathf.Clamp(audio.time, 0.01f, audio.clip.length - 0.1f);
-        }
+        if (audio == null || audio.clip == null || audio.clip.length <= 0f) yield break;
 
+        audio.time = Mathf.Clamp(audio.time, 0.01f, audio.clip.length - 0.1f);
         audio.Play();
 
         // reapply a few frames to override transient resets
