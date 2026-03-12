@@ -7,10 +7,21 @@ using UnityEngine;
 
 public class CarPatch
 {
+	// Cached reflection fields — resolved once, used everywhere
+	private static readonly FieldInfo CurrentRadioClipField =
+		typeof(VehicleController).GetField("currentRadioClip", BindingFlags.Instance | BindingFlags.NonPublic);
+	private static readonly FieldInfo RadioSignalQualityField =
+		typeof(VehicleController).GetField("radioSignalQuality", BindingFlags.Instance | BindingFlags.NonPublic);
+	private static readonly FieldInfo RadioSignalDecreaseThresholdField =
+		typeof(VehicleController).GetField("radioSignalDecreaseThreshold", BindingFlags.Instance | BindingFlags.NonPublic);
+
 	[HarmonyPatch(typeof(VehicleController), "Awake")]
 	[HarmonyPostfix]
 	public static void AwakePatch(VehicleController __instance)
 	{
+		// Cache the VehicleController reference for network callbacks
+		CruiserTunesMod.CachedVehicleController = __instance;
+
 		if (CruiserTunesMod.HasSongs)
 		{
 			AudioClip[] source = ((!CruiserTunesMod.IncludeOriginal.Value) ? CruiserTunesMod.CustomSongs : __instance.radioClips.Concat(CruiserTunesMod.CustomSongs).ToArray());
@@ -56,15 +67,16 @@ public class CarPatch
 			if (__instance.radioAudio != null && __instance.radioAudio.clip != null && __instance.radioAudio.clip.length > 0f)
 			{
 				float trueLen = CruiserTunesMod.GetTrueClipLength(__instance.radioAudio.clip);
-				float max = Math.Max(0.01f, trueLen - 0.1f);
+				float max = Mathf.Max(0.01f, trueLen - 0.1f);
 				playbackTime = UnityEngine.Random.Range(0.01f, max);
 			}
 		}
 
 		if (CruiserTunesMod.SyncPlaybackTimeMessage != null)
 		{
-			FieldInfo clipField = __instance.GetType().GetField("currentRadioClip", BindingFlags.Instance | BindingFlags.NonPublic);
-			int station = clipField != null ? (int)clipField.GetValue(__instance) : 0;
+			int station = 0;
+			if (CurrentRadioClipField != null)
+				station = (int)CurrentRadioClipField.GetValue(__instance);
 			var syncData = new CruiserTunesMod.RadioSyncData { Station = station, PlaybackTime = playbackTime };
 			CruiserTunesMod.PendingSyncData = syncData;
 
@@ -80,9 +92,9 @@ public class CarPatch
 	[HarmonyPrefix]
 	public static void SetOnClientPatch(VehicleController __instance)
 	{
-		Type type = ((object)__instance).GetType();
-		FieldInfo field = type.GetField("currentRadioClip", BindingFlags.Instance | BindingFlags.NonPublic);
-		field.SetValue(__instance, (int)field.GetValue(__instance) % __instance.radioClips.Length);
+		if (CurrentRadioClipField == null) return;
+		if (__instance.radioClips == null || __instance.radioClips.Length == 0) return;
+		CurrentRadioClipField.SetValue(__instance, (int)CurrentRadioClipField.GetValue(__instance) % __instance.radioClips.Length);
 	}
 
 	[HarmonyPatch(typeof(VehicleController), "SetRadioValues")]
@@ -91,15 +103,9 @@ public class CarPatch
 	{
 		if (CruiserTunesMod.GoodQuality.Value)
 		{
-			__instance.radioAudio.volume = 1f;
+			__instance.radioAudio.volume = Mathf.Clamp(CruiserTunesMod.Volume.Value, 0f, 1.25f);
 			__instance.radioInterference.volume = 0f;
 		}
-	}
-
-	[HarmonyPatch(typeof(VehicleController), "SwitchRadio")]
-	[HarmonyPrefix]
-	public static void SwitchRadioPatch(VehicleController __instance)
-	{
 	}
 
 	public static IEnumerator AudioSourceListener(AudioSource radio, VehicleController instance)
@@ -107,13 +113,12 @@ public class CarPatch
 		while (radio != null && instance != null)
 		{
 			AudioClip clip = radio.clip;
-			instance.radioAudio.loop = CruiserTunesMod.DoLoop.Value;
 			yield return null;
 			if (clip != radio.clip)
 			{
 				if (CruiserTunesMod.GoodQuality.Value)
 				{
-					radio.volume = 1f;
+					radio.volume = Mathf.Clamp(CruiserTunesMod.Volume.Value, 0f, 1.25f);
 					instance.radioInterference.volume = 0f;
 				}
 				if (CruiserTunesMod.instance != null)
@@ -146,60 +151,29 @@ public class CarPatch
 
 	public static string FormatLength(float lengthInSeconds)
 	{
-		int num = Mathf.FloorToInt(lengthInSeconds / 3600f);
-		int num2 = Mathf.FloorToInt(lengthInSeconds % 3600f / 60f);
-		int num3 = Mathf.FloorToInt(lengthInSeconds % 60f);
-		return $"{num:00}:{num2:00}:{num3:00}";
-	}
-
-	public static IEnumerator EnsureClipReadyAndPlay(AudioSource audio)
-	{
-		float timeout = 5f;
-		float start = Time.time;
-		while (audio == null || audio.clip == null || audio.clip.length <= 0f || !audio.clip.isReadyToPlay)
-		{
-			if (Time.time - start > timeout)
-			{
-				break;
-			}
-			yield return null;
-		}
-
-		if (audio == null || audio.clip == null || audio.clip.length <= 0f) yield break;
-
-		if (!audio.isPlaying) audio.Play();
-
-		float trueLen = CruiserTunesMod.GetTrueClipLength(audio.clip);
-		if (CruiserTunesMod.DoRandomTime != null && CruiserTunesMod.DoRandomTime.Value)
-		{
-			float max = Mathf.Max(0.01f, trueLen - 0.1f);
-			audio.time = UnityEngine.Random.Range(0.01f, max);
-		}
-		else
-		{
-			audio.time = 0f;
-		}
+		TimeSpan ts = TimeSpan.FromSeconds(lengthInSeconds);
+		return ts.TotalHours >= 1 ? ts.ToString(@"hh\:mm\:ss") : ts.ToString(@"mm\:ss");
 	}
 
 	public static void ChangeRadioStationWithoutServer(VehicleController instance)
 	{
-		Type type = ((object)instance).GetType();
-		FieldInfo field = type.GetField("radioSignalDecreaseThreshold", BindingFlags.Instance | BindingFlags.NonPublic);
-		FieldInfo field2 = type.GetField("radioSignalQuality", BindingFlags.Instance | BindingFlags.NonPublic);
-		FieldInfo field3 = type.GetField("currentRadioClip", BindingFlags.Instance | BindingFlags.NonPublic);
-		int num = ((int)field3.GetValue(instance) + 1) % instance.radioClips.Length;
-		field3.SetValue(instance, num);
+		if (CurrentRadioClipField == null || RadioSignalQualityField == null || RadioSignalDecreaseThresholdField == null) return;
+		if (instance.radioClips == null || instance.radioClips.Length == 0) return;
+
+		int num = ((int)CurrentRadioClipField.GetValue(instance) + 1) % instance.radioClips.Length;
+		CurrentRadioClipField.SetValue(instance, num);
 		instance.radioAudio.clip = instance.radioClips[num];
 		if (CruiserTunesMod.instance != null)
 		{
-			CruiserTunesMod.instance.StartCoroutine(EnsureClipReadyAndPlay(instance.radioAudio));
+			CruiserTunesMod.instance.StartCoroutine(CruiserTunesMod.EnsureClipReadyAndPlay(instance.radioAudio));
 		}
 		else
 		{
-			if (CruiserTunesMod.DoRandomTime.Value && instance.radioAudio.clip != null && instance.radioAudio.clip.length > 0f)
+			if (CruiserTunesMod.DoRandomTime != null && CruiserTunesMod.DoRandomTime.Value
+				&& instance.radioAudio.clip != null && instance.radioAudio.clip.length > 0f)
 			{
 				float trueLen = CruiserTunesMod.GetTrueClipLength(instance.radioAudio.clip);
-				float max = Math.Max(0.01f, trueLen - 0.1f);
+				float max = Mathf.Max(0.01f, trueLen - 0.1f);
 				instance.radioAudio.time = UnityEngine.Random.Range(0.01f, max);
 			}
 			else
@@ -209,7 +183,7 @@ public class CarPatch
 			instance.radioAudio.Play();
 		}
 		float num2 = 10f;
-		float num3 = (float)field2.GetValue(instance);
+		float num3 = (float)RadioSignalQualityField.GetValue(instance);
 		switch ((int)Mathf.Round(num3))
 		{
 		case 3:
@@ -229,8 +203,8 @@ public class CarPatch
 			num2 = 30f;
 			break;
 		}
-		field2.SetValue(instance, num3);
-		field.SetValue(instance, num2);
+		RadioSignalQualityField.SetValue(instance, num3);
+		RadioSignalDecreaseThresholdField.SetValue(instance, num2);
 		ChangeRadioStationPatch(instance);
 	}
 }

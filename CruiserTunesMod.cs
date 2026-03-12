@@ -13,7 +13,7 @@ using Unity.Netcode;
 using UnityEngine.Networking;
 
 [BepInDependency("LethalNetworkAPI")]
-[BepInPlugin("Mellowdy.CruiserTunes", "CruiserTunes", "1.3.0")]
+[BepInPlugin(modGUID, modName, modVersion)]
 public class CruiserTunesMod : BaseUnityPlugin
 {
 	private const string modGUID = "Mellowdy.CruiserTunes";
@@ -54,6 +54,13 @@ public class CruiserTunesMod : BaseUnityPlugin
 	public static LNetworkMessage<RadioSyncData> SyncPlaybackTimeMessage;
 	public static RadioSyncData? PendingSyncData;
 
+	// Cached VehicleController to avoid FindObjectOfType on hot path
+	public static VehicleController CachedVehicleController;
+
+	// Coroutine generation counter — prevents stale coroutines from fighting
+	private static int _playbackGeneration;
+	private static Coroutine _activePlaybackCoroutine;
+
 	private const string supportedAudioFileTypes = ".mp3 or .wav or .ogg";
 
 	private string folderName = "CustomSongs";
@@ -70,8 +77,8 @@ public class CruiserTunesMod : BaseUnityPlugin
 		{
 			instance = this;
 		}
-	mls = Logger;
-	mls.LogInfo("Loading...");
+		mls = Logger;
+		mls.LogInfo("Loading...");
 		DontDestroyOnLoad(this.gameObject);
 		this.gameObject.hideFlags = (HideFlags)61;
 		IncludeOriginal = ((BaseUnityPlugin)this).Config.Bind<bool>("Settings", "Include Original Songs", true, "The radio is able to play the orignal songs");
@@ -195,7 +202,7 @@ public class CruiserTunesMod : BaseUnityPlugin
 
 	private static IEnumerator LoadAudioClip(string filePath, int index, string fileType)
 	{
-		float loadingTime = Time.time;
+		float loadingTime = Time.realtimeSinceStartup;
 		float maxLoading = 5f;
 		string fileName = Path.GetFileName(filePath);
 		mls.LogInfo((object)("Loading " + fileName));
@@ -206,7 +213,7 @@ public class CruiserTunesMod : BaseUnityPlugin
 			loader.SendWebRequest();
 			while (!loader.isDone)
 			{
-				if (loadingTime + maxLoading < Time.time)
+				if (loadingTime + maxLoading < Time.realtimeSinceStartup)
 				{
 					mls.LogError((object)("Error loading clip from path: " + fileName));
 					instance.loadingList[index] = true;
@@ -220,8 +227,8 @@ public class CruiserTunesMod : BaseUnityPlugin
 				mls.LogError((object)("Error loading clip from path: " + fileName + "\n" + loader.error));
 				yield break;
 			}
-            AudioClip content = DownloadHandlerAudioClip.GetContent(loader);
-            content.name = fileName;
+			AudioClip content = DownloadHandlerAudioClip.GetContent(loader);
+			content.name = fileName;
 			instance.SongList.Add(content);
 		}
 		finally
@@ -234,10 +241,10 @@ public class CruiserTunesMod : BaseUnityPlugin
 	{
 		return (AudioType)(fileType switch
 		{
-			".mp3" => 13, 
-			".wav" => 20, 
-			".ogg" => 14, 
-			_ => 13, 
+			".mp3" => 13,
+			".wav" => 20,
+			".ogg" => 14,
+			_ => 13,
 		});
 	}
 
@@ -257,7 +264,7 @@ public class CruiserTunesMod : BaseUnityPlugin
 		return list;
 	}
 
-	// Server relay: when a client sends sync data, broadcast to all clients
+	// Server relay: when a client sends sync data, broadcast to all clients except sender
 	private static void OnServerReceivedSync(RadioSyncData data, ulong clientId)
 	{
 		SyncPlaybackTimeMessage?.SendClients(data);
@@ -272,15 +279,24 @@ public class CruiserTunesMod : BaseUnityPlugin
 
 	private static void OnSyncDataReceived(RadioSyncData data)
 	{
+		// Ignore sync messages we originated ourselves
+		if (NetworkManager.Singleton != null && NetworkManager.Singleton.IsServer)
+		{
+			// On the server/host, we already set PendingSyncData locally in ChangeRadioStationPatch
+			// Only apply if this data differs from what we already have (i.e., from another client)
+			if (PendingSyncData.HasValue && PendingSyncData.Value.Station == data.Station
+				&& Mathf.Approximately(PendingSyncData.Value.PlaybackTime, data.PlaybackTime))
+				return;
+		}
+
 		PendingSyncData = data;
-		// If the RPC already fired and the clip is set, apply the time now
-		var vc = UnityEngine.Object.FindObjectOfType<VehicleController>();
+		var vc = CachedVehicleController;
 		if (vc != null && vc.radioAudio != null && vc.radioAudio.clip != null
 			&& data.Station >= 0 && data.Station < vc.radioClips.Length
 			&& vc.radioAudio.clip == vc.radioClips[data.Station] && data.PlaybackTime > 0f)
 		{
-			float trueLen = GetTrueClipLength(vc.radioAudio.clip);
-			vc.radioAudio.time = Mathf.Clamp(data.PlaybackTime, 0.01f, trueLen - 0.1f);
+			float maxTime = Mathf.Max(0.01f, GetTrueClipLength(vc.radioAudio.clip) - 0.1f);
+			vc.radioAudio.time = Mathf.Clamp(data.PlaybackTime, 0.01f, maxTime);
 			PendingSyncData = null;
 		}
 	}
@@ -289,100 +305,122 @@ public class CruiserTunesMod : BaseUnityPlugin
 	[HarmonyPostfix]
 	public static void SetRadioStationPatch(ref int radioStation, VehicleController __instance)
 	{
-	    if (radioStation < 0 || radioStation >= __instance.radioClips.Length) return;
-	    __instance.radioAudio.clip = __instance.radioClips[radioStation];
+		if (radioStation < 0 || radioStation >= __instance.radioClips.Length) return;
 
-	    if (PendingSyncData.HasValue && PendingSyncData.Value.Station == radioStation)
-	    {
-	        float timeToApply = PendingSyncData.Value.PlaybackTime;
-	        PendingSyncData = null;
-	        if (instance != null)
-	            instance.StartCoroutine(EnsureClipReadyAndPlayAt(__instance.radioAudio, timeToApply));
-	        else
-	        {
-	            if (!__instance.radioAudio.isPlaying) __instance.radioAudio.Play();
-	            __instance.radioAudio.time = timeToApply;
-	        }
-	    }
-	    else
-	    {
-	        // Message hasn't arrived yet — wait briefly for it
-	        if (instance != null)
-	            instance.StartCoroutine(WaitForSyncThenPlay(__instance.radioAudio, radioStation));
-	        else
-	            __instance.radioAudio.Play();
-	    }
+		// Only assign clip if different to avoid resetting AudioSource state
+		if (__instance.radioAudio.clip != __instance.radioClips[radioStation])
+			__instance.radioAudio.clip = __instance.radioClips[radioStation];
+
+		// Cancel any previous playback coroutine to prevent fighting
+		int generation = ++_playbackGeneration;
+		if (_activePlaybackCoroutine != null && instance != null)
+		{
+			instance.StopCoroutine(_activePlaybackCoroutine);
+			_activePlaybackCoroutine = null;
+		}
+
+		if (PendingSyncData.HasValue && PendingSyncData.Value.Station == radioStation)
+		{
+			float timeToApply = PendingSyncData.Value.PlaybackTime;
+			PendingSyncData = null;
+			if (instance != null)
+				_activePlaybackCoroutine = instance.StartCoroutine(EnsureClipReadyAndPlayAt(__instance.radioAudio, timeToApply, generation));
+			else
+			{
+				if (!__instance.radioAudio.isPlaying) __instance.radioAudio.Play();
+				float maxTime = Mathf.Max(0.01f, GetTrueClipLength(__instance.radioAudio.clip) - 0.1f);
+				__instance.radioAudio.time = Mathf.Clamp(timeToApply, 0.01f, maxTime);
+			}
+		}
+		else
+		{
+			if (instance != null)
+				_activePlaybackCoroutine = instance.StartCoroutine(WaitForSyncThenPlay(__instance.radioAudio, radioStation, generation));
+			else
+				__instance.radioAudio.Play();
+		}
 	}
 
-	private static IEnumerator WaitForSyncThenPlay(AudioSource audio, int expectedStation)
+	private static IEnumerator WaitForSyncThenPlay(AudioSource audio, int expectedStation, int generation)
 	{
-	    float timeout = 0.5f;
-	    float start = Time.time;
-	    while (!PendingSyncData.HasValue || PendingSyncData.Value.Station != expectedStation)
-	    {
-	        if (Time.time - start > timeout) break;
-	        yield return null;
-	    }
+		float timeout = 0.5f;
+		float start = Time.realtimeSinceStartup;
+		while (!PendingSyncData.HasValue || PendingSyncData.Value.Station != expectedStation)
+		{
+			if (generation != _playbackGeneration) yield break;
+			if (Time.realtimeSinceStartup - start > timeout) break;
+			yield return null;
+		}
 
-	    if (PendingSyncData.HasValue && PendingSyncData.Value.Station == expectedStation)
-	    {
-	        float timeToApply = PendingSyncData.Value.PlaybackTime;
-	        PendingSyncData = null;
-	        yield return EnsureClipReadyAndPlayAt(audio, timeToApply);
-	    }
-	    else
-	    {
-	        PendingSyncData = null;
-	        yield return EnsureClipReadyAndPlay(audio);
-	    }
+		if (generation != _playbackGeneration) yield break;
+
+		if (PendingSyncData.HasValue && PendingSyncData.Value.Station == expectedStation)
+		{
+			float timeToApply = PendingSyncData.Value.PlaybackTime;
+			PendingSyncData = null;
+			yield return EnsureClipReadyAndPlayAt(audio, timeToApply, generation);
+		}
+		else
+		{
+			// Don't clear PendingSyncData on timeout — late arrival will be handled next change
+			yield return EnsureClipReadyAndPlay(audio);
+		}
 	}
 
 	// Helper coroutine to wait for readiness, set a specific time, then play
-	public static IEnumerator EnsureClipReadyAndPlayAt(AudioSource audio, float timeToSet)
+	public static IEnumerator EnsureClipReadyAndPlayAt(AudioSource audio, float timeToSet, int generation)
 	{
-	    float timeout = 5f;
-	    float start = Time.time;
-	    while (audio == null || audio.clip == null || audio.clip.length <= 0f || !audio.clip.isReadyToPlay)
-	    {
-	        if (Time.time - start > timeout) break;
-	        yield return null;
-	    }
+		float timeout = 5f;
+		float start = Time.realtimeSinceStartup;
+		while (audio == null || audio.clip == null || audio.clip.length <= 0f || audio.clip.loadState != AudioDataLoadState.Loaded)
+		{
+			if (generation != _playbackGeneration) yield break;
+			if (Time.realtimeSinceStartup - start > timeout) break;
+			yield return null;
+		}
 
-	    if (audio == null || audio.clip == null || audio.clip.length <= 0f) yield break;
+		if (generation != _playbackGeneration) yield break;
+		if (audio == null || audio.clip == null || audio.clip.length <= 0f) yield break;
 
-	    float trueLen = GetTrueClipLength(audio.clip);
-	    float clampedTime = Mathf.Clamp(timeToSet, 0.01f, trueLen - 0.1f);
+		float maxTime = Mathf.Max(0.01f, GetTrueClipLength(audio.clip) - 0.1f);
+		float clampedTime = Mathf.Clamp(timeToSet, 0.01f, maxTime);
 
-	    // Play first if not already playing, then seek — Unity's Play() resets time to 0
-	    if (!audio.isPlaying) audio.Play();
-	    audio.time = clampedTime;
+		// Play first if not already playing, then seek — Unity's Play() resets time to 0
+		if (!audio.isPlaying) audio.Play();
+		audio.time = clampedTime;
 
-	    // reapply for ~0.5s to override transient resets from game code
-	    float guardEnd = Time.time + 0.5f;
-	    while (Time.time < guardEnd)
-	    {
-	        if (audio == null || audio.clip == null) yield break;
-	        if (Mathf.Abs(audio.time - clampedTime) > 0.5f) audio.time = clampedTime;
-	        yield return null;
-	    }
+		// Reapply for ~0.5s to override transient resets from game code
+		// Account for natural playback advance when checking for drift
+		float guardStart = Time.realtimeSinceStartup;
+		float guardDuration = 0.5f;
+		while (Time.realtimeSinceStartup - guardStart < guardDuration)
+		{
+			if (generation != _playbackGeneration) yield break;
+			if (audio == null || audio.clip == null) yield break;
+			float elapsed = Time.realtimeSinceStartup - guardStart;
+			float expectedTime = clampedTime + elapsed;
+			if (Mathf.Abs(audio.time - expectedTime) > 1.0f)
+				audio.time = clampedTime + elapsed;
+			yield return null;
+		}
 	}
 
-    // Helper coroutine to wait for readiness and play (no explicit time set)
-    public static IEnumerator EnsureClipReadyAndPlay(AudioSource audio)
-    {
-        float timeout = 5f;
-        float start = Time.time;
-        while (audio == null || audio.clip == null || audio.clip.length <= 0f || !audio.clip.isReadyToPlay)
-        {
-            if (Time.time - start > timeout) break;
-            yield return null;
-        }
+	// Helper coroutine to wait for readiness and play (no explicit time set)
+	public static IEnumerator EnsureClipReadyAndPlay(AudioSource audio)
+	{
+		float timeout = 5f;
+		float start = Time.realtimeSinceStartup;
+		while (audio == null || audio.clip == null || audio.clip.length <= 0f || audio.clip.loadState != AudioDataLoadState.Loaded)
+		{
+			if (Time.realtimeSinceStartup - start > timeout) break;
+			yield return null;
+		}
 
-        if (audio == null || audio.clip == null || audio.clip.length <= 0f) yield break;
+		if (audio == null || audio.clip == null || audio.clip.length <= 0f) yield break;
 
-        if (!audio.isPlaying) audio.Play();
-        float trueLen = GetTrueClipLength(audio.clip);
-        audio.time = Mathf.Clamp(audio.time, 0.01f, trueLen - 0.1f);
-    }
+		if (!audio.isPlaying) audio.Play();
+		float maxTime = Mathf.Max(0.01f, GetTrueClipLength(audio.clip) - 0.1f);
+		audio.time = Mathf.Clamp(audio.time, 0.01f, maxTime);
+	}
 
 }
