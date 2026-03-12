@@ -55,7 +55,8 @@ public class CarPatch
 		{
 			if (__instance.radioAudio != null && __instance.radioAudio.clip != null && __instance.radioAudio.clip.length > 0f)
 			{
-				float max = Math.Max(0.01f, __instance.radioAudio.clip.length - 0.1f);
+				float trueLen = CruiserTunesMod.GetTrueClipLength(__instance.radioAudio.clip);
+				float max = Math.Max(0.01f, trueLen - 0.1f);
 				playbackTime = UnityEngine.Random.Range(0.01f, max);
 			}
 		}
@@ -66,7 +67,12 @@ public class CarPatch
 			int station = clipField != null ? (int)clipField.GetValue(__instance) : 0;
 			var syncData = new CruiserTunesMod.RadioSyncData { Station = station, PlaybackTime = playbackTime };
 			CruiserTunesMod.PendingSyncData = syncData;
-			CruiserTunesMod.SyncPlaybackTimeMessage.SendClients(syncData);
+
+			bool isServer = Unity.Netcode.NetworkManager.Singleton != null && Unity.Netcode.NetworkManager.Singleton.IsServer;
+			if (isServer)
+				CruiserTunesMod.SyncPlaybackTimeMessage.SendClients(syncData);
+			else
+				CruiserTunesMod.SyncPlaybackTimeMessage.SendServer(syncData);
 		}
 	}
 
@@ -131,7 +137,7 @@ public class CarPatch
 				{
 					if (Vector3.Distance(localPlayer.transform.position, instance.transform.position) < 10f)
 					{
-						HUDManager.Instance.DisplayTip("Now Playing:", clip.name.Replace("Radio_", "") + " - " + FormatLength(clip.length), false, false, "LC_Tip1");
+						HUDManager.Instance.DisplayTip("Now Playing:", clip.name.Replace("Radio_", "") + " - " + FormatLength(CruiserTunesMod.GetTrueClipLength(clip)), false, false, "LC_Tip1");
 					}
 				}
 			}
@@ -163,9 +169,10 @@ public class CarPatch
 
 		if (!audio.isPlaying) audio.Play();
 
+		float trueLen = CruiserTunesMod.GetTrueClipLength(audio.clip);
 		if (CruiserTunesMod.DoRandomTime != null && CruiserTunesMod.DoRandomTime.Value)
 		{
-			float max = Mathf.Max(0.01f, audio.clip.length - 0.1f);
+			float max = Mathf.Max(0.01f, trueLen - 0.1f);
 			audio.time = UnityEngine.Random.Range(0.01f, max);
 		}
 		else
@@ -191,7 +198,8 @@ public class CarPatch
 		{
 			if (CruiserTunesMod.DoRandomTime.Value && instance.radioAudio.clip != null && instance.radioAudio.clip.length > 0f)
 			{
-				float max = Math.Max(0.01f, instance.radioAudio.clip.length - 0.1f);
+				float trueLen = CruiserTunesMod.GetTrueClipLength(instance.radioAudio.clip);
+				float max = Math.Max(0.01f, trueLen - 0.1f);
 				instance.radioAudio.time = UnityEngine.Random.Range(0.01f, max);
 			}
 			else

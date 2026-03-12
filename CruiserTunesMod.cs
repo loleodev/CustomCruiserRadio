@@ -9,6 +9,7 @@ using BepInEx.Logging;
 using HarmonyLib;
 using LethalNetworkAPI;
 using UnityEngine;
+using Unity.Netcode;
 using UnityEngine.Networking;
 
 [BepInDependency("LethalNetworkAPI")]
@@ -19,7 +20,7 @@ public class CruiserTunesMod : BaseUnityPlugin
 
 	private const string modName = "CruiserTunes";
 
-	private const string modVersion = "1.3.0";
+	private const string modVersion = "1.4.0";
 
 	private readonly Harmony harmony = new Harmony("Mellowdy.CruiserTunes");
 
@@ -82,6 +83,7 @@ public class CruiserTunesMod : BaseUnityPlugin
 		Volume = ((BaseUnityPlugin)this).Config.Bind<float>("Settings", "Volume", 0.75f, "Volume of the radio (does not require restart)");
 		Volume.SettingChanged += CarPatch.ChangeVolume;
 		SyncPlaybackTimeMessage = LNetworkMessage<RadioSyncData>.Connect("CruiserTunes_SyncTime",
+			onServerReceived: OnServerReceivedSync,
 			onClientReceived: OnSyncDataReceived);
 		string directoryName = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
 		string text = Path.Combine(directoryName, folderName);
@@ -255,6 +257,19 @@ public class CruiserTunesMod : BaseUnityPlugin
 		return list;
 	}
 
+	// Server relay: when a client sends sync data, broadcast to all clients
+	private static void OnServerReceivedSync(RadioSyncData data, ulong clientId)
+	{
+		SyncPlaybackTimeMessage?.SendClients(data);
+	}
+
+	// True clip duration using samples/frequency — clip.length can report double for some MP3s
+	public static float GetTrueClipLength(AudioClip clip)
+	{
+		if (clip == null || clip.frequency <= 0) return 0f;
+		return clip.samples / (float)clip.frequency;
+	}
+
 	private static void OnSyncDataReceived(RadioSyncData data)
 	{
 		PendingSyncData = data;
@@ -264,7 +279,8 @@ public class CruiserTunesMod : BaseUnityPlugin
 			&& data.Station >= 0 && data.Station < vc.radioClips.Length
 			&& vc.radioAudio.clip == vc.radioClips[data.Station] && data.PlaybackTime > 0f)
 		{
-			vc.radioAudio.time = Mathf.Clamp(data.PlaybackTime, 0.01f, vc.radioAudio.clip.length - 0.1f);
+			float trueLen = GetTrueClipLength(vc.radioAudio.clip);
+			vc.radioAudio.time = Mathf.Clamp(data.PlaybackTime, 0.01f, trueLen - 0.1f);
 			PendingSyncData = null;
 		}
 	}
@@ -334,7 +350,8 @@ public class CruiserTunesMod : BaseUnityPlugin
 
 	    if (audio == null || audio.clip == null || audio.clip.length <= 0f) yield break;
 
-	    float clampedTime = Mathf.Clamp(timeToSet, 0.01f, audio.clip.length - 0.1f);
+	    float trueLen = GetTrueClipLength(audio.clip);
+	    float clampedTime = Mathf.Clamp(timeToSet, 0.01f, trueLen - 0.1f);
 
 	    // Play first if not already playing, then seek — Unity's Play() resets time to 0
 	    if (!audio.isPlaying) audio.Play();
@@ -364,7 +381,8 @@ public class CruiserTunesMod : BaseUnityPlugin
         if (audio == null || audio.clip == null || audio.clip.length <= 0f) yield break;
 
         if (!audio.isPlaying) audio.Play();
-        audio.time = Mathf.Clamp(audio.time, 0.01f, audio.clip.length - 0.1f);
+        float trueLen = GetTrueClipLength(audio.clip);
+        audio.time = Mathf.Clamp(audio.time, 0.01f, trueLen - 0.1f);
     }
 
 }
